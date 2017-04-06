@@ -46,6 +46,22 @@ class ModelSelector(object):
                 print("failure on {} with {} states".format(self.this_word, num_states))
             return None
 
+    def selected_model(self, num_states, x, lengths):
+        # with warnings.catch_warnings():
+        warnings.filterwarnings("ignore", category=DeprecationWarning)
+        # warnings.filterwarnings("ignore", category=RuntimeWarning)
+        try:
+            hmm_model = GaussianHMM(n_components=num_states, covariance_type="diag", n_iter=1000,
+                                    random_state=self.random_state, verbose=False).fit(x, lengths)
+            if self.verbose:
+                print("model created for {} with {} states".format(self.this_word, num_states))
+            logL = hmm_model.score(x, lengths)
+            return hmm_model, logL
+        except:
+            if self.verbose:
+                print("failure on {} with {} states".format(self.this_word, num_states))
+            return None
+
 
 class SelectorConstant(ModelSelector):
     """ select the model with value self.n_constant
@@ -105,4 +121,11 @@ class SelectorCV(ModelSelector):
         warnings.filterwarnings("ignore", category=DeprecationWarning)
 
         # TODO implement model selection using CV
-        raise NotImplementedError
+        n_splits = min(3, len(self.lengths))
+        split_method = KFold(n_splits=n_splits)
+        sum_log = 0
+        for cv_train_idx, cv_test_idx in split_method.split(self.sequences):
+            X_train, lengths_train = combine_sequences(cv_train_idx, self.sequences)
+            model, logL =  self.selected_model(3, X_train, lengths_train)
+            sum_log += logL
+        return model, sum_log / n_splits
