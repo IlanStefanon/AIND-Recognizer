@@ -7,6 +7,8 @@ from hmmlearn.hmm import GaussianHMM
 from sklearn.model_selection import KFold
 from asl_utils import combine_sequences
 
+from collections import defaultdict
+
 
 class ModelSelector(object):
     '''
@@ -95,22 +97,22 @@ class SelectorBIC(ModelSelector):
 
         # model selection based on BIC scores
 
-        #number of states :
+        # number of states :
         n = np.sum(self.lengths)
 
         min_bic = 1000000
         best_hmm_model = None
         for nb_hidden_state in range(self.min_n_components, self.max_n_components + 1):
-            #model, logL = self.base_model(nb_hidden_state)
+            # model, logL = self.base_model(nb_hidden_state)
             try:
                 hmm_model = GaussianHMM(n_components=nb_hidden_state, covariance_type="diag", n_iter=1000,
                                         random_state=self.random_state, verbose=False).fit(self.X, self.lengths)
                 logL = hmm_model.score(self.X, self.lengths)
                 logN = np.log(n)
                 # number of free states
-                p =  n^2 + 2* nb_hidden_state *n - 1
+                p = n*n + 2 * nb_hidden_state * n - 1
                 bic = -2 * logL + p * logN
-                if (bic < min_bic):
+                if bic < min_bic:
                     min_bic = bic
                     best_hmm_model = hmm_model
             except:
@@ -127,12 +129,67 @@ class SelectorDIC(ModelSelector):
     DIC = log(P(X(i)) - 1/(M-1)SUM(log(P(X(all but i))
     '''
 
+    warnings.filterwarnings("ignore", category=DeprecationWarning)
+    warnings.filterwarnings("ignore", category=RuntimeWarning)
+
+    def __init__(self, all_word_sequences: dict, all_word_Xlengths: dict, this_word: str,
+                 n_constant=3,
+                 min_n_components=2, max_n_components=10,
+                 random_state=14, verbose=False):
+        ModelSelector.__init__(self, all_word_sequences, all_word_Xlengths, this_word,
+                 n_constant=3,
+                 min_n_components=2, max_n_components=10,
+                 random_state=14, verbose=False)
+        self.dict_logL = dict()
+        self.compute_logL()
+
+    def compute_logL(self):
+        for word, value in self.hwords.items():
+            self.dict_logL[word] = dict()
+            X, lengths = value
+            for nb_hidden_state in range(self.min_n_components, self.max_n_components + 1):
+                try:
+                    hmm_model = GaussianHMM(n_components=nb_hidden_state, covariance_type="diag", n_iter=1000,
+                                            random_state=self.random_state, verbose=False).fit(X, lengths)
+                    logL = hmm_model.score(X, lengths)
+                    self.dict_logL[word][nb_hidden_state] = logL
+                    #print(word, nb_hidden_state, logL)
+                except:
+                    continue
+
+    def average_not_word(self, not_this_word, n_components):
+        average_logL = 0
+        size = 0
+        for word, value in self.dict_logL.items():
+            #print('word', word)
+            #print('value', value)
+            if word != not_this_word:
+                #if not_this_word == 'MARY':
+                #    print(not_this_word, word, n_components)
+                    #print(value[n_components])
+                try:
+                    if n_components in value:
+                        average_logL += value[n_components]
+                        #if not_this_word == 'MARY':
+                        #    print('average_logL', average_logL)
+                        size += 1
+                except:
+                    print('error raise by in value')
+        if size > 0:
+            average_logL /= size
+        #print('average', average_logL)
+        return average_logL
+
     def select(self):
-        warnings.filterwarnings("ignore", category=DeprecationWarning)
-
-        # TODO implement model selection based on DIC scores
-        raise NotImplementedError
-
+        max_dic = -1000000
+        best_hidden_state = 0
+        for nb_hidden_state in range(self.min_n_components, self.max_n_components + 1):
+            if nb_hidden_state in self.dict_logL[self.this_word]:
+                dic = self.dict_logL[self.this_word][nb_hidden_state] - self.average_not_word(self.this_word, nb_hidden_state)
+            if dic > max_dic:
+                max_dic = dic
+                best_hidden_state = nb_hidden_state
+        return self.base_model(best_hidden_state)
 
 class SelectorCV(ModelSelector):
     ''' select best model based on average log Likelihood of cross-validation folds
@@ -140,6 +197,7 @@ class SelectorCV(ModelSelector):
     '''
 
     def select(self):
+
         warnings.filterwarnings("ignore", category=DeprecationWarning)
 
         # model selection using CV
@@ -147,7 +205,7 @@ class SelectorCV(ModelSelector):
         split_method = KFold(n_splits=n_splits)
         max_mean_logL = -1000000
         best_hidden_state = 0
-        for nb_hidden_state in range(self.min_n_components, self.max_n_components+1) :
+        for nb_hidden_state in range(self.min_n_components, self.max_n_components+1):
             #print('nb_hidden_state', nb_hidden_state)
             sum_log = 0
             for cv_train_idx, cv_test_idx in split_method.split(self.sequences):
