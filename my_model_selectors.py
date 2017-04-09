@@ -7,7 +7,8 @@ from hmmlearn.hmm import GaussianHMM
 from sklearn.model_selection import KFold
 from asl_utils import combine_sequences
 
-from collections import defaultdict
+import copy
+
 
 
 class ModelSelector(object):
@@ -98,7 +99,9 @@ class SelectorBIC(ModelSelector):
         # model selection based on BIC scores
 
         # number of states :
-        n = np.sum(self.lengths)
+        #n = np.sum(self.lengths)
+        n = len((self.lengths))
+        logN = np.log(n)
 
         min_bic = 1000000
         best_hmm_model = None
@@ -108,7 +111,7 @@ class SelectorBIC(ModelSelector):
                 hmm_model = GaussianHMM(n_components=nb_hidden_state, covariance_type="diag", n_iter=1000,
                                         random_state=self.random_state, verbose=False).fit(self.X, self.lengths)
                 logL = hmm_model.score(self.X, self.lengths)
-                logN = np.log(n)
+
                 # number of free states
                 p = n*n + 2 * nb_hidden_state * n - 1
                 bic = -2 * logL + p * logN
@@ -119,6 +122,33 @@ class SelectorBIC(ModelSelector):
                 continue
         return best_hmm_model
 
+dict_logL = dict()
+current_sequence = dict()
+
+def is_same_dict(dict1, dict2):
+    if not dict1 or not dict2:
+        return False
+    for k in dict1:
+        if not k in dict2:
+            return False
+        else:
+            for i,j in zip(dict1[k],dict2[k]):
+                #print(i)
+                for sub_i,sub_j in zip(i,j):
+                    #print(sub_i, type(sub_i))
+                    if not np.array_equal(sub_i, sub_j):
+                        #print(sub_i, sub_j)
+                        return False
+                    #for sub_sub_i,sub_sub_j in zip(sub_i,sub_j) :
+                    #    if sub_sub_i != sub_sub_j :
+                    #        return False
+                #if i != j:
+                    #return False
+            #if not np.array_equal(dict1[k], dict2[k]):
+                #print(dict1[k], dict2[k])
+            #if dict1[k] != dict2[k]:
+                #return False
+    return True
 
 class SelectorDIC(ModelSelector):
     ''' select best model based on Discriminative Information Criterion
@@ -132,6 +162,7 @@ class SelectorDIC(ModelSelector):
     warnings.filterwarnings("ignore", category=DeprecationWarning)
     warnings.filterwarnings("ignore", category=RuntimeWarning)
 
+
     def __init__(self, all_word_sequences: dict, all_word_Xlengths: dict, this_word: str,
                  n_constant=3,
                  min_n_components=2, max_n_components=10,
@@ -140,27 +171,36 @@ class SelectorDIC(ModelSelector):
                  n_constant=3,
                  min_n_components=2, max_n_components=10,
                  random_state=14, verbose=False)
-        self.dict_logL = dict()
+
         self.compute_logL()
 
     def compute_logL(self):
-        for word, value in self.hwords.items():
-            self.dict_logL[word] = dict()
-            X, lengths = value
-            for nb_hidden_state in range(self.min_n_components, self.max_n_components + 1):
-                try:
-                    hmm_model = GaussianHMM(n_components=nb_hidden_state, covariance_type="diag", n_iter=1000,
-                                            random_state=self.random_state, verbose=False).fit(X, lengths)
-                    logL = hmm_model.score(X, lengths)
-                    self.dict_logL[word][nb_hidden_state] = logL
-                    #print(word, nb_hidden_state, logL)
-                except:
-                    continue
+        global current_sequence
+        if not dict_logL  or current_sequence:
+
+            #if current_sequence and current_sequence == self.hwords:
+            if is_same_dict(current_sequence, self.hwords):
+                return
+                #print(current_sequence, self.hwords)
+            print('first generation of dict_logL')
+            for word, value in self.hwords.items():
+                dict_logL[word] = dict()
+                X, lengths = value
+                for nb_hidden_state in range(self.min_n_components, self.max_n_components + 1):
+                    try:
+                        hmm_model = GaussianHMM(n_components=nb_hidden_state, covariance_type="diag", n_iter=1000,
+                                                random_state=self.random_state, verbose=False).fit(X, lengths)
+                        logL = hmm_model.score(X, lengths)
+                        dict_logL[word][nb_hidden_state] = logL
+                        #print(word, nb_hidden_state, logL)
+                    except:
+                        continue
+            current_sequence = copy.deepcopy(self.hwords)
 
     def average_not_word(self, not_this_word, n_components):
         average_logL = 0
         size = 0
-        for word, value in self.dict_logL.items():
+        for word, value in dict_logL.items():
             #print('word', word)
             #print('value', value)
             if word != not_this_word:
@@ -182,10 +222,11 @@ class SelectorDIC(ModelSelector):
 
     def select(self):
         max_dic = -1000000
+        dic = max_dic
         best_hidden_state = 0
         for nb_hidden_state in range(self.min_n_components, self.max_n_components + 1):
-            if nb_hidden_state in self.dict_logL[self.this_word]:
-                dic = self.dict_logL[self.this_word][nb_hidden_state] - self.average_not_word(self.this_word, nb_hidden_state)
+            if nb_hidden_state in dict_logL[self.this_word]:
+                dic = dict_logL[self.this_word][nb_hidden_state] - self.average_not_word(self.this_word, nb_hidden_state)
             if dic > max_dic:
                 max_dic = dic
                 best_hidden_state = nb_hidden_state
@@ -202,24 +243,41 @@ class SelectorCV(ModelSelector):
 
         # model selection using CV
         n_splits = min(3, len(self.lengths))
-        split_method = KFold(n_splits=n_splits)
         max_mean_logL = -1000000
         best_hidden_state = 0
         for nb_hidden_state in range(self.min_n_components, self.max_n_components+1):
             #print('nb_hidden_state', nb_hidden_state)
             sum_log = 0
-            for cv_train_idx, cv_test_idx in split_method.split(self.sequences):
-                X_train, lengths_train = combine_sequences(cv_train_idx, self.sequences)
-                try:
-                    model, logL =  self.selected_model(nb_hidden_state, X_train, lengths_train)
-                    sum_log += logL
+            n_splits_done = 0
+            mean_logL = -1000000
+            if n_splits == 1 :
+                try :
+                    hmm_model = GaussianHMM(n_components=nb_hidden_state, covariance_type="diag", n_iter=1000,
+                                            random_state=self.random_state, verbose=False).fit(self.X, self.lengths)
+                    mean_logL = hmm_model.score(self.X, self.lengths)
                 except:
-                    break
-            mean_logL = sum_log / n_splits
+                    continue
+
+            else :
+                split_method = KFold(n_splits=n_splits)
+                for cv_train_idx, cv_test_idx in split_method.split(self.sequences):
+                    X_train, lengths_train = combine_sequences(cv_train_idx, self.sequences)
+                    try:
+                        model, logL =  self.selected_model(nb_hidden_state, X_train, lengths_train)
+                        sum_log += logL
+                        n_splits_done += 1
+                    except:
+                        continue
+                if n_splits_done != 0 :
+                    mean_logL = sum_log / float(n_splits_done)
+                else:
+                    mean_logL = -1000000
             #print('mean_logL', mean_logL)
             if(mean_logL> max_mean_logL):
                 max_mean_logL = mean_logL
                 best_hidden_state = nb_hidden_state
         #print('max_mean_logL', max_mean_logL)
-
-        return self.base_model(best_hidden_state)
+        if best_hidden_state == 0:
+            return self.base_model(self.n_constant)
+        else:
+            return self.base_model(best_hidden_state)
